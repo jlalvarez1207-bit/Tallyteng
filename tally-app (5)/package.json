@@ -1,0 +1,7 @@
+{
+  "name": "tally-app",
+  "private": true,
+  "dependencies": {
+    "@netlify/blobs": "^7.4.0"
+  }
+}
