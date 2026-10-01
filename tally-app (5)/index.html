@@ -257,6 +257,7 @@ const state = {
   foodLog: {},
   savedFoods: [],
   recipes: [],
+  ingredientLibrary: [],
   iconUsage: {},
   recipeIconUsage: {},
   weightLog: [],
@@ -306,7 +307,7 @@ async function getToken(){
 }
 function combinedState(){
   return { settings: state.settings, foodLog: state.foodLog, savedFoods: state.savedFoods, weightLog: state.weightLog,
-    recipes: state.recipes, iconUsage: state.iconUsage, recipeIconUsage: state.recipeIconUsage };
+    recipes: state.recipes, ingredientLibrary: state.ingredientLibrary, iconUsage: state.iconUsage, recipeIconUsage: state.recipeIconUsage };
 }
 let syncTimer = null;
 function queueSync(){
@@ -340,6 +341,7 @@ function loadLocal(){
   state.foodLog = ls_get('tally_food_log', {});
   state.savedFoods = ls_get('tally_saved_foods', []);
   state.recipes = ls_get('tally_recipes', []);
+  state.ingredientLibrary = ls_get('tally_ingredient_library', []);
   state.iconUsage = ls_get('tally_icon_usage', {});
   state.recipeIconUsage = ls_get('tally_recipe_icon_usage', {});
   state.weightLog = ls_get('tally_weight_log', []);
@@ -355,6 +357,7 @@ async function loadAll(){
     if(remote.foodLog) state.foodLog = remote.foodLog;
     if(remote.savedFoods) state.savedFoods = remote.savedFoods;
     if(remote.recipes) state.recipes = remote.recipes;
+    if(remote.ingredientLibrary) state.ingredientLibrary = remote.ingredientLibrary;
     if(remote.iconUsage) state.iconUsage = remote.iconUsage;
     if(remote.recipeIconUsage) state.recipeIconUsage = remote.recipeIconUsage;
     if(remote.weightLog) state.weightLog = remote.weightLog;
@@ -362,6 +365,7 @@ async function loadAll(){
     ls_set('tally_food_log', state.foodLog);
     ls_set('tally_saved_foods', state.savedFoods);
     ls_set('tally_recipes', state.recipes);
+    ls_set('tally_ingredient_library', state.ingredientLibrary);
     ls_set('tally_icon_usage', state.iconUsage);
     ls_set('tally_recipe_icon_usage', state.recipeIconUsage);
     ls_set('tally_weight_log', state.weightLog);
@@ -375,6 +379,15 @@ function saveSettings(){ ls_set('tally_settings', state.settings); queueSync(); 
 function saveFoodLog(){ ls_set('tally_food_log', state.foodLog); queueSync(); }
 function saveSavedFoods(){ ls_set('tally_saved_foods', state.savedFoods); queueSync(); }
 function saveRecipes(){ ls_set('tally_recipes', state.recipes); queueSync(); }
+function saveIngredientLibrary(){ ls_set('tally_ingredient_library', state.ingredientLibrary); queueSync(); }
+function upsertIngredientLibrary(ing){
+  const idx = state.ingredientLibrary.findIndex(x=>x.name.toLowerCase()===ing.name.toLowerCase());
+  const entry = { id: idx>-1?state.ingredientLibrary[idx].id:uid(), name: ing.name, unit: ing.unit,
+    kcalBasis: ing.kcalBasis, gramsBasis: ing.gramsBasis, proteinBasis: ing.proteinBasis||0, carbsBasis: ing.carbsBasis||0,
+    fatBasis: ing.fatBasis||0, sugarBasis: ing.sugarBasis||0, fiberBasis: ing.fiberBasis||0, sodiumBasis: ing.sodiumBasis||0 };
+  if(idx>-1) state.ingredientLibrary[idx] = entry; else state.ingredientLibrary.push(entry);
+  saveIngredientLibrary();
+}
 function saveIconUsage(){ ls_set('tally_icon_usage', state.iconUsage); queueSync(); }
 function saveRecipeIconUsage(){ ls_set('tally_recipe_icon_usage', state.recipeIconUsage); queueSync(); }
 function bumpIconUsage(icon){ state.iconUsage[icon] = (state.iconUsage[icon]||0)+1; saveIconUsage(); }
@@ -399,7 +412,7 @@ function renderIconPicker(selectedIcon, usageMap, categories, categoryLabels, pi
   }).join('');
   return `<div id="${pickerId}">${chips}${grids}</div>`;
 }
-function wireIconPicker(pickerId){
+function wireIconPicker(pickerId, onSelect){
   const container = document.getElementById(pickerId);
   if(!container) return;
   const chips = container.querySelectorAll('.icon-cat-chip');
@@ -414,6 +427,7 @@ function wireIconPicker(pickerId){
     btn.onclick = () => {
       container.querySelectorAll('.icon-opt').forEach(b=>b.classList.remove('sel'));
       btn.classList.add('sel');
+      if(onSelect) onSelect(btn.dataset.icon);
     };
   });
 }
@@ -820,13 +834,13 @@ function renderRecipesTab(){
 function bindRecipesTab(){
   $('#rlSearch').oninput = (ev) => { state.recipeListQuery = ev.target.value; render(); };
   $('#newRecipeBtn').onclick = () => {
-    state.recipeSheet = { editId:null, draft:{ name:'', icon:RECIPE_ICONS[0], ingredients:[] }, ingredientForm:false };
+    state.recipeSheet = { editId:null, draft:{ name:'', icon:RECIPE_ICONS[0], ingredients:[], cookedWeight:'' }, ingredientForm:false, ingQuery:'', ingSelected:null };
     render();
   };
   $all('.entry[data-id]').forEach(row=>{
     row.onclick = () => {
       const r = state.recipes.find(x=>x.id===row.dataset.id);
-      if(r) { state.recipeSheet = { editId:r.id, draft: { name:r.name, icon:r.icon, ingredients:[...(r.ingredients||[])] }, ingredientForm:false }; render(); }
+      if(r) { state.recipeSheet = { editId:r.id, draft: { name:r.name, icon:r.icon, ingredients:[...(r.ingredients||[])], cookedWeight:r.cookedWeight||'' }, ingredientForm:false, ingQuery:'', ingSelected:null }; render(); }
     };
   });
 }
@@ -848,7 +862,10 @@ function renderRecipeSheet(){
   const d = rs.draft;
   const isEdit = !!rs.editId;
   const totals = recipeTotals(d.ingredients);
-  const per100 = totals.grams>0 ? round((totals.kcal/totals.grams)*100) : 0;
+  const cooked = Number(d.cookedWeight);
+  const usingCooked = cooked > 0;
+  const effectiveGrams = usingCooked ? cooked : totals.grams;
+  const per100 = effectiveGrams>0 ? round((totals.kcal/effectiveGrams)*100) : 0;
   return `<div class="overlay" id="rOverlay">
     <div class="sheet">
       <div class="sheet-row"><h2>${isEdit?'Edit recipe':'New recipe'}</h2><span class="x" id="rClose">&times;</span></div>
@@ -868,16 +885,22 @@ function renderRecipeSheet(){
               </div>
             `).join('')}
           </div>
-          ${rs.ingredientForm ? renderIngredientForm() : `<button type="button" class="mode-toggle" id="addIngBtn" style="width:100%;padding:9px;border:1px dashed var(--border);border-radius:10px;background:var(--bg);color:var(--soft);font-size:13px;cursor:pointer;">&#43; Add ingredient</button>`}
+          ${rs.ingredientForm ? renderIngredientForm(rs) : `<button type="button" id="addIngBtn" style="width:100%;padding:9px;border:1px dashed var(--border);border-radius:10px;background:var(--bg);color:var(--soft);font-size:13px;cursor:pointer;font-family:inherit;">&#43; Add ingredient</button>`}
+        </div>
+
+        <div>
+          <label class="field-label">Total weight after cooking (g) &mdash; optional</label>
+          <input type="number" id="rCookedWeight" placeholder="Raw ingredient total: ${round(totals.grams)}g" value="${d.cookedWeight||''}" inputmode="decimal" step="any"/>
+          <p style="font-size:11px;color:var(--muted);margin:6px 2px 0;">Weigh the dish after cooking and enter it here if you want &mdash; water cooks off, so this is usually less than the raw total. Leave blank to use the raw total instead.</p>
         </div>
 
         <div class="card tint-good" style="padding:12px 14px;margin:0;">
-          <p style="font-size:11px;color:var(--accent-dark);margin:0 0 4px;">Total &middot; ${round(totals.grams)}g</p>
+          <p id="rTotalLabel" style="font-size:11px;color:var(--accent-dark);margin:0 0 4px;">${usingCooked ? `Finished weight &middot; ${round(cooked)}g` : `Total &middot; ${round(totals.grams)}g`}</p>
           <div style="display:flex;justify-content:space-between;align-items:baseline;">
             <span style="font-size:18px;font-weight:700;color:var(--accent-dark);">${round(totals.kcal)} kcal</span>
             <span style="font-size:11px;color:var(--accent-dark);">P ${round(totals.protein)}g &middot; C ${round(totals.carbs)}g &middot; F ${round(totals.fat)}g</span>
           </div>
-          ${totals.grams>0 ? `<p style="font-size:11px;color:var(--accent-dark);margin:6px 0 0;border-top:1px solid rgba(0,0,0,0.08);padding-top:6px;">= ${per100} kcal per 100g &mdash; this is what you'll weigh portions against</p>` : ''}
+          <p id="rPer100Line" style="font-size:11px;color:var(--accent-dark);margin:${effectiveGrams>0?'6px':'0'} 0 0;${effectiveGrams>0?'border-top:1px solid rgba(0,0,0,0.08);padding-top:6px;':''}">${effectiveGrams>0 ? `= ${per100} kcal per 100g${usingCooked?' of finished dish':''} &mdash; this is what you'll weigh portions against` : ''}</p>
         </div>
 
         <div class="form-msg" id="rMsg"></div>
@@ -890,8 +913,47 @@ function renderRecipeSheet(){
     </div>
   </div>`;
 }
-function renderIngredientForm(){
+function renderIngredientForm(rs){
+  const mode = rs.ingredientForm;
+  const hasLibrary = state.ingredientLibrary.length > 0;
+
+  if(mode==='library'){
+    const q = rs.ingQuery || '';
+    const filtered = state.ingredientLibrary.filter(i=>i.name.toLowerCase().includes(q.toLowerCase()));
+    const sel = rs.ingSelected;
+    return `<div class="card" style="padding:12px;margin:8px 0 0;background:var(--bg);">
+      <div class="mode-toggle" style="margin-bottom:10px;">
+        <button type="button" id="ingModeLib" class="sel">From library</button>
+        <button type="button" id="ingModeNew">New ingredient</button>
+      </div>
+      <div class="search-box"><span>&#128269;</span><input type="text" id="ingSearch" placeholder="Search ingredients" value="${escapeHtml(q)}"/></div>
+      ${sel ? `
+      <div class="selected-food" style="margin-top:8px;">
+        <p class="n">${escapeHtml(sel.name)}</p>
+        <div class="row2">
+          <input type="number" id="iUsed" placeholder="${eatenWord(sel.unit)}" inputmode="decimal" step="any" autofocus/>
+          <button type="button" class="save" style="border-radius:10px;padding:10px;font-weight:700;border:none;color:#fff;background:var(--accent);" id="iAddFromLib">Add</button>
+        </div>
+        <div class="form-msg" id="iMsg"></div>
+      </div>` : ''}
+      <div id="ingLibList" style="max-height:200px;overflow-y:auto;margin-top:8px;">
+        ${filtered.length===0 ? '<div class="empty">No matches \u2014 try New ingredient.</div>' : filtered.map(i=>`
+          <div class="saved-row ${sel&&sel.id===i.id?'row-sel':''}" data-libid="${i.id}">
+            <div class="info"><p class="n">${escapeHtml(i.name)}</p><p class="d">${i.kcalBasis} kcal / ${i.gramsBasis}${unitSuffix(i.unit)}</p></div>
+          </div>
+        `).join('')}
+      </div>
+      <div class="sheet-actions" style="margin-top:8px;">
+        <button type="button" class="cancel" id="iCancel">Cancel</button>
+      </div>
+    </div>`;
+  }
+
   return `<div class="card" style="padding:12px;margin:8px 0 0;background:var(--bg);">
+    ${hasLibrary ? `<div class="mode-toggle" style="margin-bottom:10px;">
+      <button type="button" id="ingModeLib2">From library</button>
+      <button type="button" id="ingModeNew2" class="sel">New ingredient</button>
+    </div>` : ''}
     <div><label class="field-label">Ingredient name</label><input type="text" id="iName" placeholder="e.g. Chicken thigh"/></div>
     <div style="margin-top:8px;"><label class="field-label">Measured in</label>
       <select id="iUnit" class="unit-select">
@@ -933,7 +995,22 @@ function bindRecipeSheet(){
   $('#rClose').onclick = () => { state.recipeSheet=null; render(); };
   $('#rOverlay').addEventListener('click',(ev)=>{ if(ev.target.id==='rOverlay'){ state.recipeSheet=null; render(); } });
   $('#rCancel').onclick = () => { state.recipeSheet=null; render(); };
-  wireIconPicker('rIconPicker');
+  $('#rName').oninput = (ev) => { rs.draft.name = ev.target.value; };
+  $('#rCookedWeight').oninput = (ev) => {
+    rs.draft.cookedWeight = ev.target.value;
+    const totals = recipeTotals(rs.draft.ingredients);
+    const cooked = Number(rs.draft.cookedWeight);
+    const usingCooked = cooked > 0;
+    const effectiveGrams = usingCooked ? cooked : totals.grams;
+    const per100 = effectiveGrams>0 ? round((totals.kcal/effectiveGrams)*100) : 0;
+    $('#rTotalLabel').innerHTML = usingCooked ? `Finished weight &middot; ${round(cooked)}g` : `Total &middot; ${round(totals.grams)}g`;
+    const per100El = $('#rPer100Line');
+    per100El.innerHTML = effectiveGrams>0 ? `= ${per100} kcal per 100g${usingCooked?' of finished dish':''} &mdash; this is what you'll weigh portions against` : '';
+    per100El.style.margin = effectiveGrams>0 ? '6px 0 0' : '0';
+    per100El.style.borderTop = effectiveGrams>0 ? '1px solid rgba(0,0,0,0.08)' : 'none';
+    per100El.style.paddingTop = effectiveGrams>0 ? '6px' : '0';
+  };
+  wireIconPicker('rIconPicker', (icon) => { rs.draft.icon = icon; });
 
   if(rs.editId){
     $('#rDelete').onclick = () => {
@@ -950,7 +1027,37 @@ function bindRecipeSheet(){
     };
   });
 
-  if(rs.ingredientForm){
+  if(rs.ingredientForm==='library'){
+    $('#ingModeNew').onclick = () => { rs.ingredientForm='new'; rs.ingSelected=null; render(); };
+    $('#ingSearch').oninput = (ev) => { rs.ingQuery = ev.target.value; render(); };
+    $all('[data-libid]').forEach(row=>{
+      row.onclick = () => { rs.ingSelected = state.ingredientLibrary.find(i=>i.id===row.dataset.libid); render(); };
+    });
+    $('#iCancel').onclick = () => { rs.ingredientForm=false; rs.ingSelected=null; render(); };
+    if($('#iAddFromLib')){
+      $('#iAddFromLib').onclick = () => {
+        const sel = rs.ingSelected;
+        const usedEl = $('#iUsed');
+        const used = Number(usedEl.value);
+        if(!(used>=0) || usedEl.value===''){
+          usedEl.classList.add('field-error');
+          $('#iMsg').textContent = 'Enter the amount used.';
+          return;
+        }
+        const kcal = Math.round((sel.kcalBasis/sel.gramsBasis)*used);
+        const protein = sel.proteinBasis ? round((sel.proteinBasis/sel.gramsBasis)*used) : 0;
+        const carbs = sel.carbsBasis ? round((sel.carbsBasis/sel.gramsBasis)*used) : 0;
+        const fat = sel.fatBasis ? round((sel.fatBasis/sel.gramsBasis)*used) : 0;
+        const sugar = sel.sugarBasis ? round((sel.sugarBasis/sel.gramsBasis)*used) : 0;
+        const fiber = sel.fiberBasis ? round((sel.fiberBasis/sel.gramsBasis)*used) : 0;
+        const sodium = sel.sodiumBasis ? round((sel.sodiumBasis/sel.gramsBasis)*used) : 0;
+        rs.draft.ingredients.push({ id:uid(), name:sel.name, unit:sel.unit, kcalBasis:sel.kcalBasis, gramsBasis:sel.gramsBasis, usedAmount:used, kcal, protein, carbs, fat, sugar, fiber, sodium });
+        rs.ingredientForm=false; rs.ingSelected=null;
+        render();
+      };
+    }
+  } else if(rs.ingredientForm==='new'){
+    $('#ingModeLib2') && ($('#ingModeLib2').onclick = () => { rs.ingredientForm='library'; rs.ingQuery=''; rs.ingSelected=null; render(); });
     $('#iCancel').onclick = () => { rs.ingredientForm=false; render(); };
     $('#iAdd').onclick = () => {
       const nameEl = $('#iName');
@@ -973,26 +1080,33 @@ function bindRecipeSheet(){
       const fiber = fiberBasis ? round((fiberBasis/gramsBasis)*used) : 0;
       const sodium = sodiumBasis ? round((sodiumBasis/gramsBasis)*used) : 0;
       rs.draft.ingredients.push({ id:uid(), name, unit, kcalBasis, gramsBasis, usedAmount:used, kcal, protein, carbs, fat, sugar, fiber, sodium });
+      upsertIngredientLibrary({ name, unit, kcalBasis, gramsBasis, proteinBasis, carbsBasis, fatBasis, sugarBasis, fiberBasis, sodiumBasis });
       rs.ingredientForm=false;
       render();
     };
   } else {
-    $('#addIngBtn').onclick = () => { rs.ingredientForm=true; render(); };
+    $('#addIngBtn').onclick = () => {
+      rs.ingredientForm = state.ingredientLibrary.length ? 'library' : 'new';
+      rs.ingQuery=''; rs.ingSelected=null;
+      render();
+    };
   }
 
   $('#rSave').onclick = () => {
-    const nameEl = $('#rName');
-    const name = nameEl.value.trim();
-    if(!name){ $('#rMsg').textContent = 'Name your recipe.'; nameEl.classList.add('field-error'); return; }
+    const name = (rs.draft.name||'').trim();
+    if(!name){ $('#rMsg').textContent = 'Name your recipe.'; $('#rName').classList.add('field-error'); return; }
     if((rs.draft.ingredients||[]).length===0){ $('#rMsg').textContent = 'Add at least one ingredient.'; return; }
-    const icon = selectedIconFrom('rIconPicker', RECIPE_ICONS[0]);
+    const icon = rs.draft.icon || RECIPE_ICONS[0];
     bumpRecipeIconUsage(icon);
     const totals = recipeTotals(rs.draft.ingredients);
+    const cooked = Number(rs.draft.cookedWeight);
+    const effectiveGrams = cooked>0 ? cooked : totals.grams;
     const recipeObj = {
       id: rs.editId || uid(),
       name, icon, unit:'g',
       ingredients: rs.draft.ingredients,
-      kcalBasis: round(totals.kcal), gramsBasis: round(totals.grams),
+      cookedWeight: cooked>0 ? cooked : null,
+      kcalBasis: round(totals.kcal), gramsBasis: round(effectiveGrams),
       proteinBasis: round(totals.protein), carbsBasis: round(totals.carbs), fatBasis: round(totals.fat),
       sugarBasis: round(totals.sugar), fiberBasis: round(totals.fiber), sodiumBasis: round(totals.sodium)
     };
@@ -1209,6 +1323,9 @@ function openImportSheet(){
       state.recipes = mergeRecipes(state.recipes, data.recipes);
       addedRecipes = state.recipes.length - before;
       saveRecipes();
+    }
+    if(data.ingredientLibrary){
+      data.ingredientLibrary.forEach(ing => upsertIngredientLibrary(ing));
     }
     if(data.weightLog){
       const before = state.weightLog.length;
